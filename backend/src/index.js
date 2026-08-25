@@ -1,20 +1,16 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
-import ytdl from "@distube/ytdl-core";
-import TiktokDL from "@tobyg74/tiktok-api-dl";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const { instagramGetUrl } = require("instagram-url-direct");
+import youtubeDl from "youtube-dl-exec";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 
 dotenv.config();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 4000;
+const COOKIES_FILE = process.env.COOKIES_FILE || "";
 
 function corsOrigin() {
   const value = process.env.FRONTEND_ORIGIN;
@@ -26,6 +22,7 @@ const HOST_RULES = [
   { platform: "youtube", hosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"] },
   { platform: "tiktok", hosts: ["tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"] },
   { platform: "instagram", hosts: ["instagram.com", "www.instagram.com", "instagr.am"] },
+  { platform: "facebook", hosts: ["facebook.com", "www.facebook.com", "m.facebook.com", "fb.watch", "fb.me"] },
 ];
 
 function hostnameOf(url) {
@@ -49,9 +46,22 @@ function parsePublicUrl(raw) {
   }
   const platform = detectPlatform(url.href);
   if (!platform) {
-    throw new Error("Only TikTok, Instagram and YouTube URLs are supported");
+    throw new Error("Only TikTok, Instagram, YouTube and Facebook URLs are supported");
   }
   return { url: url.href, platform };
+}
+
+function ytdlFlags(extra = {}) {
+  return {
+    noCheckCertificates: true,
+    noWarnings: true,
+    noPlaylist: true,
+    restrictFilenames: true,
+    ffmpegLocation: ffmpegInstaller.path,
+    addHeader: ["referer:https://www.youtube.com", "user-agent:Mozilla/5.0"],
+    ...(COOKIES_FILE ? { cookies: COOKIES_FILE } : {}),
+    ...extra,
+  };
 }
 
 function safeFilename(title, ext = "mp4") {
@@ -62,127 +72,58 @@ function safeFilename(title, ext = "mp4") {
   return `${base}.${ext}`;
 }
 
-function formatBytes(bytes) {
-  const num = Number(bytes);
-  return Number.isFinite(num) && num > 0 ? num : null;
-}
+function pickFormats(info) {
+  const formats = Array.isArray(info.formats) ? info.formats : [];
+  const progressive = formats.filter(
+    (f) =>
+      f.format_id &&
+      f.vcodec &&
+      f.vcodec !== "none" &&
+      f.acodec &&
+      f.acodec !== "none" &&
+      f.protocol !== "m3u8_native" &&
+      f.protocol !== "m3u8"
+  );
 
-// ---------- YouTube ----------
-
-async function youtubeInfo(url) {
-  const info = await ytdl.getInfo(url);
-  const details = info.videoDetails;
-
-  const videoFormats = info.formats
-    .filter((f) => f.hasVideo && f.hasAudio && f.container === "mp4")
-    .sort((a, b) => (b.height || 0) - (a.height || 0));
+  const videoHeights = [
+    ...new Set(
+      formats
+        .filter((f) => f.vcodec && f.vcodec !== "none" && f.height)
+        .map((f) => f.height)
+    ),
+  ]
+    .sort((a, b) => b - a)
+    .slice(0, 4);
 
   const seen = new Set();
-  const formats = [];
-  for (const f of videoFormats) {
-    const key = f.height || "sd";
+  const unique = [];
+  for (const format of progressive.sort((a, b) => (b.height || 0) - (a.height || 0))) {
+    const key = `${format.height || "sd"}-${format.ext}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    formats.push({
-      id: f.itag.toString(),
-      label: `${f.height || "SD"}p · MP4`,
-      ext: "mp4",
-      filesize: formatBytes(f.contentLength),
+    unique.push({
+      id: String(format.format_id),
+      label: `${format.height || "SD"}p · ${String(format.ext || "mp4").toUpperCase()}`,
+      ext: format.ext || "mp4",
+      filesize: format.filesize || format.filesize_approx || null,
     });
-    if (formats.length >= 5) break;
+    if (unique.length >= 5) break;
   }
 
-  const audioOnly = info.formats
-    .filter((f) => f.hasAudio && !f.hasVideo)
-    .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+  const merged = videoHeights.map((height) => ({
+    id: `bv*[height<=${height}]+ba/b`,
+    label: `${height}p`,
+    ext: "mp4",
+    filesize: null,
+  }));
 
-  if (audioOnly) {
-    formats.push({
-      id: audioOnly.itag.toString(),
-      label: "Audio only",
-      ext: "m4a",
-      filesize: formatBytes(audioOnly.contentLength),
-    });
-  }
-
-  return {
-    id: details.videoId,
-    title: details.title,
-    thumbnail: details.thumbnails?.at(-1)?.url || null,
-    duration: Number(details.lengthSeconds) || null,
-    uploader: details.author?.name || null,
-    formats,
-  };
+  return [
+    { id: "bv*+ba/b", label: "Best available", ext: "mp4", filesize: null },
+    ...unique,
+    ...merged.filter((item) => !unique.some((u) => u.label.startsWith(`${item.label}`))),
+    { id: "bestaudio", label: "Audio only", ext: "m4a", filesize: null },
+  ];
 }
-
-function youtubeStream(url, formatId, res, title) {
-  const stream = ytdl(url, {
-    quality: formatId && formatId !== "best" ? formatId : "highest",
-  });
-
-  let started = false;
-  stream.on("response", () => {
-    started = true;
-    res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Content-Disposition", `attachment; filename="${safeFilename(title, "mp4")}"`);
-  });
-  stream.on("error", (err) => {
-    if (!res.headersSent) {
-      res.status(400).json({ error: err.message || "Download failed" });
-    } else {
-      res.end();
-    }
-  });
-  stream.pipe(res);
-}
-
-// ---------- TikTok ----------
-
-async function tiktokInfo(url) {
-  const result = await TiktokDL.Downloader(url, { version: "v1" });
-  if (result.status !== "success" || !result.result) {
-    throw new Error(result.message || "Could not fetch TikTok video");
-  }
-  const data = result.result;
-  const videoUrl = Array.isArray(data.video) ? data.video[0] : data.video;
-
-  return {
-    id: data.id || null,
-    title: data.description || "TikTok video",
-    thumbnail: data.cover || data.thumbnail || null,
-    duration: null,
-    uploader: data.author?.nickname || data.author?.username || null,
-    formats: videoUrl
-      ? [{ id: "tiktok-video", label: "Video · MP4", ext: "mp4", filesize: null }]
-      : [],
-    _videoUrl: videoUrl,
-  };
-}
-
-// ---------- Instagram ----------
-
-async function instagramInfo(url) {
-  const data = await instagramGetUrl(url);
-  if (!data.url_list || data.url_list.length === 0) {
-    throw new Error("Could not fetch this Instagram post");
-  }
-  const media = data.media_details?.[0];
-  const mediaUrl = data.url_list[0];
-  const ext = media?.type === "image" ? "jpg" : "mp4";
-
-  return {
-    id: null,
-    title: `${data.post_info?.owner_username || "instagram"} post`,
-    thumbnail: media?.thumbnail || null,
-    duration: null,
-    uploader: data.post_info?.owner_username || null,
-    formats: [{ id: "instagram-media", label: media?.type === "image" ? "Image" : "Video · MP4", ext, filesize: null }],
-    _mediaUrl: mediaUrl,
-    _ext: ext,
-  };
-}
-
-// ---------- App ----------
 
 const app = express();
 app.set("trust proxy", 1);
@@ -221,90 +162,103 @@ app.get("/health", (_req, res) => {
 app.post("/api/info", infoLimiter, async (req, res) => {
   try {
     const { url, platform } = parsePublicUrl(req.body?.url);
+    const info = await youtubeDl(url, ytdlFlags({ dumpSingleJson: true, skipDownload: true }));
 
-    let info;
-    if (platform === "youtube") info = await youtubeInfo(url);
-    else if (platform === "tiktok") info = await tiktokInfo(url);
-    else if (platform === "instagram") info = await instagramInfo(url);
-
-    const { _videoUrl, _mediaUrl, _ext, ...publicInfo } = info;
-    res.json({ platform, ...publicInfo });
+    res.json({
+      platform,
+      id: info.id || null,
+      title: info.title || "Untitled",
+      thumbnail: info.thumbnail || info.thumbnails?.at(-1)?.url || null,
+      duration: info.duration || null,
+      uploader: info.uploader || info.channel || null,
+      formats: pickFormats(info),
+    });
   } catch (error) {
-    const message = error?.message || "Could not fetch video info";
+    const message = error?.stderr || error?.message || "Could not fetch video info";
     res.status(400).json({ error: String(message).slice(0, 400) });
   }
 });
 
 app.get("/api/download", downloadLimiter, async (req, res) => {
+  let child;
   try {
-    const { url, platform } = parsePublicUrl(req.query.url);
-    const formatId = typeof req.query.format === "string" ? req.query.format : "";
+    const { url } = parsePublicUrl(req.query.url);
+    const format = typeof req.query.format === "string" && req.query.format.length < 80
+      ? req.query.format
+      : "bv*+ba/b";
     const title = typeof req.query.title === "string" ? req.query.title : "video";
+    const ext = format.includes("bestaudio") ? "m4a" : "mp4";
 
-    if (platform === "youtube") {
-      youtubeStream(url, formatId, res, title);
-      return;
-    }
+    const args = [
+      url,
+      "-f",
+      format,
+      "-o",
+      "-",
+      "--no-playlist",
+      "--no-warnings",
+      "--no-check-certificates",
+      "--ffmpeg-location",
+      ffmpegInstaller.path,
+      "--merge-output-format",
+      "mp4",
+    ];
+    if (COOKIES_FILE) args.push("--cookies", COOKIES_FILE);
 
-    if (platform === "tiktok") {
-      const info = await tiktokInfo(url);
-      if (!info._videoUrl) throw new Error("No downloadable video found");
-      const upstream = await fetch(info._videoUrl);
-      if (!upstream.ok || !upstream.body) throw new Error("Could not download TikTok video");
-      res.setHeader("Content-Type", "video/mp4");
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFilename(title, "mp4")}"`);
-      upstream.body.pipeTo(
-        new WritableStream({
-          write(chunk) {
-            res.write(chunk);
-          },
-          close() {
-            res.end();
-          },
-        })
-      );
-      return;
-    }
+    child = spawn(youtubeDl.constants.YOUTUBE_DL_PATH, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
 
-    if (platform === "instagram") {
-      const info = await instagramInfo(url);
-      if (!info._mediaUrl) throw new Error("No downloadable media found");
-      const upstream = await fetch(info._mediaUrl);
-      if (!upstream.ok || !upstream.body) throw new Error("Could not download Instagram media");
-      res.setHeader("Content-Type", info._ext === "jpg" ? "image/jpeg" : "video/mp4");
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFilename(title, info._ext)}"`);
-      upstream.body.pipeTo(
-        new WritableStream({
-          write(chunk) {
-            res.write(chunk);
-          },
-          close() {
-            res.end();
-          },
-        })
-      );
-      return;
-    }
+    let stderr = "";
+    let started = false;
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
 
-    res.status(400).json({ error: "Unsupported platform" });
+    child.stdout.on("data", (chunk) => {
+      if (!started) {
+        started = true;
+        res.setHeader("Content-Type", ext === "m4a" ? "audio/mp4" : "video/mp4");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${safeFilename(title, ext)}"`
+        );
+      }
+      res.write(chunk);
+    });
+
+    child.on("error", () => {
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Download failed to start" });
+      } else {
+        res.end();
+      }
+    });
+
+    child.on("close", (code) => {
+      if (!started) {
+        const message = stderr.trim() || `yt-dlp exited with code ${code}`;
+        if (!res.headersSent) {
+          res.status(400).json({ error: message.slice(0, 400) });
+        }
+        return;
+      }
+      res.end();
+    });
+
+    req.on("close", () => {
+      if (child && !child.killed) child.kill("SIGTERM");
+    });
   } catch (error) {
+    if (child && !child.killed) child.kill("SIGTERM");
     if (!res.headersSent) {
       res.status(400).json({ error: error.message || "Download failed" });
-    } else {
-      res.end();
     }
   }
 });
 
-const publicDir = path.resolve(__dirname, "frontend/dist");
-app.use(express.static(publicDir));
-app.get(/^(?!\/api\/|\/health).*/, (req, res, next) => {
-  if (req.method !== "GET") return next();
-  res.sendFile(path.join(publicDir, "index.html"), (err) => {
-    if (err) next();
-  });
-});
-
 app.listen(PORT, () => {
-  console.log(`API ready on http://localhost:${PORT}`);
+  console.log(`API ready on port ${PORT}`);
 });
