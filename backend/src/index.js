@@ -7,8 +7,10 @@ import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import ytdl from "@distube/ytdl-core";
 import TiktokDL from "@tobyg74/tiktok-api-dl";
-import pkg from "instagram-url-direct";
-const { instagramGetUrl } = pkg;
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { instagramGetUrl } = require("instagram-url-direct");
+
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
