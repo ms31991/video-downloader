@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import { TikTok } from "./pages/tiktok";
 import { Instagram } from "./pages/instagram";
 import { YouTube } from "./pages/youtube";
@@ -16,6 +17,7 @@ function App() {
         <Route path="/youtube-downloader" element={<YouTube />} />
       </Routes>
       <Footer />
+      <SpeedInsights />
     </div>
   );
 }
