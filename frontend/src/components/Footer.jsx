@@ -1,20 +1,22 @@
+import { Link } from "react-router-dom";
+
 export const Footer = () => {
   return (
     <footer className="border-t border-gray-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="mx-auto max-w-6xl px-6 py-10">
         <div className="grid gap-8 md:grid-cols-3">
           <div>
-            <h3 className="flex items-center gap-2.5 text-lg font-bold">
+            <Link to="/" className="flex items-center gap-2.5 text-lg font-bold">
               <img
                 src="/logo.png"
-                alt=""
+                alt="ClipSnap"
                 className="h-9 w-9 rounded-full object-cover"
               />
-              VideoDownloader
-            </h3>
+              ClipSnap
+            </Link>
 
             <p className="mt-3 text-sm text-gray-500 dark:text-zinc-400">
-              A simple video downloader for supported platforms.
+              Free online video downloader for TikTok, Instagram and YouTube.
             </p>
           </div>
 
@@ -24,27 +26,26 @@ export const Footer = () => {
             </h3>
 
             <div className="mt-3 flex flex-col gap-2 text-sm">
-              <a
-                href="/tiktok-downloader"
+              <Link
+                to="/tiktok-downloader"
                 className="hover:underline"
               >
                 TikTok Downloader
-              </a>
+              </Link>
 
-              <a
-                href="/instagram-downloader"
+              <Link
+                to="/instagram-downloader"
                 className="hover:underline"
               >
                 Instagram Downloader
-              </a>
+              </Link>
 
-              <a
-                href="/youtube-downloader"
+              <Link
+                to="/youtube-downloader"
                 className="hover:underline"
               >
                 YouTube Downloader
-              </a>
-
+              </Link>
             </div>
           </div>
 
@@ -54,23 +55,32 @@ export const Footer = () => {
             </h3>
 
             <div className="mt-3 flex flex-col gap-2 text-sm">
-              <a href="/privacy" className="hover:underline">
+              <Link
+                to="/privacy"
+                className="hover:underline"
+              >
                 Privacy Policy
-              </a>
+              </Link>
 
-              <a href="/terms" className="hover:underline">
+              <Link
+                to="/terms"
+                className="hover:underline"
+              >
                 Terms of Service
-              </a>
+              </Link>
 
-              <a href="/dmca" className="hover:underline">
+              <Link
+                to="/dmca"
+                className="hover:underline"
+              >
                 DMCA
-              </a>
+              </Link>
             </div>
           </div>
         </div>
 
         <div className="mt-10 border-t border-gray-200 pt-6 text-center text-sm text-gray-500 dark:border-zinc-800 dark:text-zinc-400">
-          © 2026 VideoDownloader. All rights reserved.
+          © 2026 ClipSnap. All rights reserved.
         </div>
       </div>
     </footer>

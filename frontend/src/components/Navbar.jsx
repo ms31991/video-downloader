@@ -11,10 +11,10 @@ export const Navbar = () => {
         <Link to="/" className="flex items-center gap-2.5">
           <img
             src="/logo.png"
-            alt="VideoDownloader"
+            alt="ClipSnap"
             className="h-10 w-10 rounded-full object-cover"
           />
-          <span className="text-xl font-bold">VideoDownloader</span>
+          <span className="text-xl font-bold">ClipSnap</span>
         </Link>
 
         <div className="flex items-center gap-3 text-sm md:gap-5 md:text-base">
